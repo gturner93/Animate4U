@@ -36,3 +36,9 @@ def unregister() -> None:
 
 if __name__ == "__main__":
     register()
+    CLASSES = (
+    ui_panel.ANIMATE4U_PG_settings,
+    operators.ANIMATE4U_OT_toggle_extreme_pin,
+    operators.ANIMATE4U_OT_toggle_before_after,
+    ui_panel.ANIMATE4U_PT_main_panel,
+)

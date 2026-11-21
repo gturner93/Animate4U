@@ -67,3 +67,18 @@ def collect_selected_bone_fcurves(context) -> list:
         if any(f'pose.bones["{name}"]' in fc.data_path for name in selected_bone_names):
             matching_curves.append(fc)
     return matching_curves
+def apply_smoothed_curve_with_handles(fcurve, new_values: np.ndarray) -> None:
+    """Write smoothed values via bulk foreach_set and recalculate smooth handles."""
+    key_count = len(fcurve.keyframe_points)
+    if key_count == 0:
+        return
+
+    coords = read_fcurve_coords(fcurve)
+    coords[:, 1] = np.asarray(new_values, dtype=np.float64)
+    fcurve.keyframe_points.foreach_set("co", coords.ravel())
+
+    for kp in fcurve.keyframe_points:
+        kp.handle_left_type = "AUTO"
+        kp.handle_right_type = "AUTO"
+
+    fcurve.update()

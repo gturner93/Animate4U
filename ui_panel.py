@@ -1,15 +1,22 @@
 import bpy
 
+from . import operators
+
+
+def _on_assistance_strength_update(self, context: bpy.types.Context) -> None:
+    operators.apply_assistance_slider(context, self.assistance_strength)
+
 
 class ANIMATE4U_PG_settings(bpy.types.PropertyGroup):
     """Stores UI properties for the Animate4U sidebar."""
 
     assistance_strength: bpy.props.FloatProperty(
         name="Assistance Strength",
-        description="Blend between raw animation and cleaned animation",
+        description="Blend between raw animation and pin-locked smoothed animation",
         default=0.0,
         min=0.0,
         max=1.0,
+        update=_on_assistance_strength_update,
     )
     before_after_toggle: bpy.props.BoolProperty(
         name="Before / After",
@@ -42,6 +49,7 @@ class ANIMATE4U_PT_main_panel(bpy.types.Panel):
 
         smooth_box = layout.box()
         smooth_box.label(text="Smoothing", icon="SMOOTHCURVE")
+        smooth_box.operator("animate4u.toggle_extreme_pin", icon="PINNED")
 
         breakdown_box = layout.box()
         breakdown_box.label(text="Smart Breakdowns", icon="KEYFRAME")
