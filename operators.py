@@ -1,6 +1,13 @@
 import bpy
+import numpy as np
 
-from .core.fcurve_io import collect_selected_bone_fcurves
+from .core.fcurve_io import (
+    align_quaternion_signs,
+    apply_smoothed_curve_with_handles,
+    collect_selected_bone_fcurves,
+    read_fcurve_coords,
+)
+from .core.smoothing import compute_pin_locked_smoothed_values
 from .core.state_cache import CACHE
 
 
@@ -32,16 +39,6 @@ class ANIMATE4U_OT_toggle_before_after(bpy.types.Operator):
             props.before_after_toggle = False
 
         return {"FINISHED"}
-    import bpy
-import numpy as np
-
-from .core.fcurve_io import (
-    apply_smoothed_curve_with_handles,
-    collect_selected_bone_fcurves,
-    read_fcurve_coords,
-)
-from .core.smoothing import compute_pin_locked_smoothed_values
-from .core.state_cache import CACHE
 
 
 def _curve_key(fcurve) -> str:
@@ -50,8 +47,40 @@ def _curve_key(fcurve) -> str:
 
 def _get_pinned_mask(fcurve) -> np.ndarray:
     """Return boolean mask of keyframes tagged as EXTREME."""
-    count = len(fcurve.keyframe_points)
     return np.array([kp.type == "EXTREME" for kp in fcurve.keyframe_points], dtype=bool)
+
+
+def _aligned_quaternion_values(fcurves: list) -> dict[str, np.ndarray]:
+    groups = {}
+    for fc in fcurves:
+        if (
+            not fc.data_path.endswith("rotation_quaternion")
+            or fc.array_index not in range(4)
+        ):
+            continue
+        key = _curve_key(fc)
+        coords = CACHE.original_coords.get(key)
+        if coords is None or len(coords) == 0:
+            coords = read_fcurve_coords(fc)
+        groups.setdefault(fc.data_path, {})[fc.array_index] = (key, coords)
+
+    aligned_values = {}
+    for components in groups.values():
+        if set(components) != {0, 1, 2, 3}:
+            continue
+        frames = components[0][1][:, 0]
+        if any(
+            not np.array_equal(frames, components[index][1][:, 0])
+            for index in range(1, 4)
+        ):
+            continue
+        quaternions = np.column_stack(
+            [components[index][1][:, 1] for index in range(4)]
+        )
+        aligned = align_quaternion_signs(quaternions)
+        for index in range(4):
+            aligned_values[components[index][0]] = aligned[:, index]
+    return aligned_values
 
 
 def apply_assistance_slider(context: bpy.types.Context, alpha: float) -> None:
@@ -61,6 +90,7 @@ def apply_assistance_slider(context: bpy.types.Context, alpha: float) -> None:
         return
 
     CACHE.save_original(fcurves)
+    quaternion_values = _aligned_quaternion_values(fcurves) if alpha > 0.0 else {}
 
     for fc in fcurves:
         key = _curve_key(fc)
@@ -69,7 +99,7 @@ def apply_assistance_slider(context: bpy.types.Context, alpha: float) -> None:
             orig_coords = read_fcurve_coords(fc)
 
         frames = orig_coords[:, 0]
-        raw_vals = orig_coords[:, 1]
+        raw_vals = quaternion_values.get(key, orig_coords[:, 1])
         pinned_mask = _get_pinned_mask(fc)
 
         updated_vals = compute_pin_locked_smoothed_values(
@@ -116,32 +146,3 @@ class ANIMATE4U_OT_toggle_extreme_pin(bpy.types.Operator):
         self.report({"INFO"}, f"{action_label} ({len(selected_kps)} keyframes).")
         return {"FINISHED"}
 
-
-class ANIMATE4U_OT_toggle_before_after(bpy.types.Operator):
-    """Toggle between original backup curves and cleaned/modified curves."""
-
-    bl_idname = "animate4u.toggle_before_after"
-    bl_label = "Before / After"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context: bpy.types.Context) -> set[str]:
-        props = context.scene.animate4u_settings
-        fcurves = collect_selected_bone_fcurves(context)
-
-        if not fcurves:
-            self.report({"WARNING"}, "Select animated pose bones with unlocked F-Curves.")
-            return {"CANCELLED"}
-
-        CACHE.save_original(fcurves)
-
-        if not props.before_after_toggle:
-            if not CACHE.modified_coords:
-                CACHE.save_modified(fcurves)
-            CACHE.apply_modified(fcurves)
-            props.before_after_toggle = True
-        else:
-            CACHE.save_modified(fcurves)
-            CACHE.restore_original(fcurves)
-            props.before_after_toggle = False
-
-        return {"FINISHED"}

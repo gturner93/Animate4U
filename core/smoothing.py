@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.interpolate import CubicSpline
-from scipy.signal import savgol_filter
 
 
 def _choose_savgol_window(num_points: int, desired_window: int = 7) -> int:
@@ -15,6 +13,65 @@ def _choose_savgol_window(num_points: int, desired_window: int = 7) -> int:
     if window % 2 == 0:
         window = max(3, window - 1)
     return min(window, num_points)
+
+
+def _savgol_smooth(values: np.ndarray, window: int, poly_order: int) -> np.ndarray:
+    half_window = window // 2
+    offsets = np.arange(-half_window, half_window + 1, dtype=np.float64)
+    design = np.vander(offsets, N=poly_order + 1, increasing=True)
+    weights = np.linalg.pinv(design)[0]
+    smoothed = np.empty_like(values)
+
+    for index in range(half_window, len(values) - half_window):
+        smoothed[index] = weights @ values[
+            index - half_window : index + half_window + 1
+        ]
+
+    fit_x = np.arange(window, dtype=np.float64)
+    left_coefficients = np.polynomial.polynomial.polyfit(
+        fit_x, values[:window], poly_order
+    )
+    right_coefficients = np.polynomial.polynomial.polyfit(
+        fit_x, values[-window:], poly_order
+    )
+    smoothed[:half_window] = np.polynomial.polynomial.polyval(
+        fit_x[:half_window], left_coefficients
+    )
+    smoothed[-half_window:] = np.polynomial.polynomial.polyval(
+        fit_x[-half_window:], right_coefficients
+    )
+    return smoothed
+
+
+def _natural_cubic_interpolate(
+    x: np.ndarray, y: np.ndarray, query: np.ndarray
+) -> np.ndarray:
+    interval_widths = np.diff(x)
+    second_derivatives = np.zeros_like(y)
+    if len(x) > 2:
+        matrix = np.diag(2.0 * (interval_widths[:-1] + interval_widths[1:]))
+        if len(x) > 3:
+            off_diagonal = interval_widths[1:-1]
+            matrix += np.diag(off_diagonal, k=1)
+            matrix += np.diag(off_diagonal, k=-1)
+        slopes = np.diff(y) / interval_widths
+        right_hand_side = 6.0 * (slopes[1:] - slopes[:-1])
+        second_derivatives[1:-1] = np.linalg.solve(matrix, right_hand_side)
+
+    segment = np.clip(np.searchsorted(x, query, side="right") - 1, 0, len(x) - 2)
+    width = interval_widths[segment]
+    left_distance = x[segment + 1] - query
+    right_distance = query - x[segment]
+    return (
+        second_derivatives[segment] * left_distance**3 / (6.0 * width)
+        + second_derivatives[segment + 1] * right_distance**3 / (6.0 * width)
+        + (y[segment] - second_derivatives[segment] * width**2 / 6.0)
+        * left_distance
+        / width
+        + (y[segment + 1] - second_derivatives[segment + 1] * width**2 / 6.0)
+        * right_distance
+        / width
+    )
 
 
 def compute_pin_locked_smoothed_values(
@@ -39,7 +96,7 @@ def compute_pin_locked_smoothed_values(
 
     win_len = _choose_savgol_window(raw_arr.size, desired_window=7)
     poly_order = min(2, win_len - 1)
-    smoothed = savgol_filter(raw_arr, window_length=win_len, polyorder=poly_order)
+    smoothed = _savgol_smooth(raw_arr, window=win_len, poly_order=poly_order)
 
     pin_indices = np.flatnonzero(pins_arr)
     if pin_indices.size >= 2:
@@ -48,8 +105,9 @@ def compute_pin_locked_smoothed_values(
         order = np.argsort(pin_frames)
         unique_frames, unique_idx = np.unique(pin_frames[order], return_index=True)
         if unique_frames.size >= 2:
-            spline = CubicSpline(unique_frames, pin_errors[order][unique_idx], bc_type="natural")
-            correction = spline(frames_arr)
+            correction = _natural_cubic_interpolate(
+                unique_frames, pin_errors[order][unique_idx], frames_arr
+            )
             smoothed = smoothed + correction
     elif pin_indices.size == 1:
         idx = pin_indices[0]
